@@ -69,6 +69,11 @@ class LatencyMonitor:
             return 0.0
         return sum(self.recent_durations) / len(self.recent_durations)
     
+    @property
+    def throttle_active(self) -> bool:
+        """Alias for throttle_group_b."""
+        return self.throttle_group_b
+    
     def get_stats(self) -> Dict[str, Any]:
         return {
             "average_latency_ms": round(self.get_average_latency(), 1),
