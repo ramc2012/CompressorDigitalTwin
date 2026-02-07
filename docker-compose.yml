@@ -21,7 +21,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis - Real-time data caching
+  # Redis - Real-time data caching & Celery broker
   redis:
     image: redis:7-alpine
     container_name: gcs-redis
@@ -101,6 +101,42 @@ services:
       - ./shared_config:/app/shared_config
     ports:
       - "8000:8000"
+
+  # Celery Worker - Background tasks
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gcs-celery-worker
+    restart: unless-stopped
+    command: celery -A app.celery_app worker --loglevel=info
+    depends_on:
+      - redis
+      - postgres
+      - backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gcs_user:gcs_password@postgres:5432/gcs_twin
+      REDIS_URL: redis://redis:6379
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: my-super-secret-admin-token
+    volumes:
+      - ./backend:/app
+
+  # Celery Beat - Scheduled tasks
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gcs-celery-beat
+    restart: unless-stopped
+    command: celery -A app.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+      - celery-worker
+    environment:
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./backend:/app
 
   # Frontend Dashboard
   frontend:
