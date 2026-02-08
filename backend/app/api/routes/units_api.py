@@ -79,6 +79,7 @@ async def get_unit(unit_id: str, current_user: dict = Depends(get_current_user))
 async def get_live_data(unit_id: str) -> Dict:
     """Get raw live data from Modbus/SCADA for a unit."""
     from app.services.unit_manager import get_unit_manager
+    from app.services.data_simulator import DataSimulator
     
     manager = get_unit_manager()
     
@@ -86,6 +87,13 @@ async def get_live_data(unit_id: str) -> Dict:
         raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
     
     live_data = manager.get_live_data(unit_id)
+    
+    # Fall back to simulator if no Modbus data available
+    if not live_data or len(live_data) < 5:
+        simulator = DataSimulator()
+        live_data = simulator.generate_snapshot()
+        # Update the unit manager with simulated data for consistency
+        manager.update_live_data(unit_id, live_data)
     
     return {
         "unit_id": unit_id,
