@@ -41,7 +41,8 @@ class Unit(Base):
     # Relationships
     equipment_spec: Mapped[Optional["EquipmentSpec"]] = relationship(back_populates="unit", uselist=False)
     stages: Mapped[List["StageConfig"]] = relationship(back_populates="unit", order_by="StageConfig.stage_num")
-    registers: Mapped[List["RegisterMapping"]] = relationship(back_populates="unit")
+    # FIXED: back_populates matches RegisterMapping.unit_ref
+    registers: Mapped[List["RegisterMapping"]] = relationship(back_populates="unit_ref")
     alarms: Mapped[List["AlarmSetpoint"]] = relationship(back_populates="unit")
     gas_properties: Mapped[Optional["GasProperty"]] = relationship(back_populates="unit", uselist=False)
 

@@ -1,150 +1,210 @@
-import { useState, useEffect, useMemo } from 'react';
-import { initialRegisters } from '../data/initialRegisters';
-
-interface AlarmEvent {
-  id: string;
-  timestamp: string;
-  registerId: number;
-  parameterName: string;
-  value: number;
-  threshold: number;
-  type: 'High' | 'Low';
-  severity: 'Warning' | 'Critical';
-  status: 'Active' | 'Ack';
-}
+/**
+ * AlarmsPage - Real-time alarms with backend integration
+ */
+import { useState, useEffect } from 'react';
+import { useUnit } from '../contexts/UnitContext';
+import { fetchActiveAlarms, fetchAlarmsSummary, acknowledgeAlarm, type AlarmActive } from '../lib/api';
 
 export function AlarmsPage() {
-  // Simulate active alarms based on registers that have "limits" defined
-  // In a real app, this would come from a store or backend
-  const [alarms, setAlarms] = useState<AlarmEvent[]>([]);
-  const [filter, setFilter] = useState<'All' | 'Active' | 'Ack'>('All');
+    const { unitId } = useUnit();
+    const [activeAlarms, setActiveAlarms] = useState<AlarmActive[]>([]);
+    const [summary, setSummary] = useState<any>(null);
+    const [loading, setLoading] = useState(true);
+    const [tab, setTab] = useState<'active' | 'history' | 'config'>('active');
 
-  // Hardcoded simulation of some alarms for demonstration
-  useEffect(() => {
-    // Generate some mock alarms based on the register list's "analogs"
-    const analogs = initialRegisters.filter(r => r.type === 'Analog');
-    
-    // Create a few initial alarms if empty
-    if (alarms.length === 0 && analogs.length > 0) {
-      const newAlarms: AlarmEvent[] = [
-        {
-          id: 'evt-001',
-          timestamp: new Date(Date.now() - 1000 * 60 * 5).toISOString(), // 5 mins ago
-          registerId: 40001,
-          parameterName: 'Compressor Suction Pressure',
-          value: 14.2,
-          threshold: 15.0,
-          type: 'Low',
-          severity: 'Critical',
-          status: 'Active'
-        },
-        {
-          id: 'evt-002',
-          timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-          registerId: 40005,
-          parameterName: 'Oil Pressure',
-          value: 85.5,
-          threshold: 80.0,
-          type: 'High',
-          severity: 'Warning',
-          status: 'Ack' // Acknowledged
+    const loadAlarms = async () => {
+        try {
+            const [alarmsData, summaryData] = await Promise.all([
+                fetchActiveAlarms(unitId),
+                fetchAlarmsSummary(unitId)
+            ]);
+            setActiveAlarms(alarmsData.alarms || []);
+            setSummary(summaryData);
+        } catch (e) {
+            console.error('Failed to load alarms:', e);
+            // Use demo data
+            setActiveAlarms([]);
+            setSummary({ total_active: 0, by_level: { LL: 0, L: 0, H: 0, HH: 0 }, shutdown_active: false });
+        } finally {
+            setLoading(false);
         }
-      ];
-      setAlarms(newAlarms);
-    }
-  }, []);
+    };
 
-  const acknowledgeAlarm = (id: string) => {
-    setAlarms(prev => prev.map(a => 
-      a.id === id ? { ...a, status: 'Ack' } : a
-    ));
-  };
+    useEffect(() => {
+        loadAlarms();
+        const interval = setInterval(loadAlarms, 5000);
+        return () => clearInterval(interval);
+    }, [unitId]);
 
-  const filteredAlarms = useMemo(() => {
-    if (filter === 'All') return alarms;
-    return alarms.filter(a => a.status === filter);
-  }, [alarms, filter]);
+    const handleAcknowledge = async (alarmId: string) => {
+        try {
+            await acknowledgeAlarm(alarmId);
+            await loadAlarms();
+        } catch (e) {
+            console.error('Failed to acknowledge:', e);
+        }
+    };
 
-  return (
-    <div className="min-h-screen p-6">
-      <header className="mb-6 flex justify-between items-end">
-        <div>
-           <h1 className="text-3xl font-bold text-white mb-2">Alarms & Events</h1>
-           <p className="text-slate-400">System alerts and limit violations</p>
-        </div>
-        <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
-           {['All', 'Active', 'Ack'].map(f => (
-             <button
-               key={f}
-               onClick={() => setFilter(f as any)}
-               className={`px-4 py-1 rounded text-sm transition-colors ${
-                 filter === f ? 'bg-red-500 text-white font-bold' : 'text-slate-400 hover:text-white'
-               }`}
-             >
-               {f}
-             </button>
-           ))}
-        </div>
-      </header>
+    const getLevelColor = (level: string) => {
+        switch (level) {
+            case 'HH': return 'bg-red-500/20 text-red-400 border-red-500/50';
+            case 'H': return 'bg-orange-500/20 text-orange-400 border-orange-500/50';
+            case 'L': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
+            case 'LL': return 'bg-blue-500/20 text-blue-400 border-blue-500/50';
+            default: return 'bg-slate-500/20 text-slate-400 border-slate-500/50';
+        }
+    };
 
-      {/* Alarms Table */}
-      <div className="glass-card overflow-hidden">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="bg-slate-900/50 text-slate-400 text-xs uppercase tracking-wider">
-               <th className="p-4">Time</th>
-               <th className="p-4">Severity</th>
-               <th className="p-4">Parameter</th>
-               <th className="p-4">Type</th>
-               <th className="p-4 text-right">Value</th>
-               <th className="p-4 text-right">Limit</th>
-               <th className="p-4 text-center">Status</th>
-               <th className="p-4 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-white/5">
-            {filteredAlarms.length === 0 ? (
-               <tr><td colSpan={8} className="p-8 text-center text-slate-500">No alarms found.</td></tr>
-            ) : (
-              filteredAlarms.map(alarm => (
-                <tr key={alarm.id} className="hover:bg-white/5 transition-colors">
-                  <td className="p-4 text-sm font-mono text-slate-300">
-                    {new Date(alarm.timestamp).toLocaleTimeString()}
-                  </td>
-                  <td className="p-4">
-                     <span className={`px-2 py-1 rounded text-xs font-bold border ${
-                       alarm.severity === 'Critical' 
-                         ? 'bg-red-500/20 text-red-500 border-red-500/30' 
-                         : 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30'
-                     }`}>
-                       {alarm.severity}
-                     </span>
-                  </td>
-                  <td className="p-4 font-medium text-white">{alarm.parameterName}</td>
-                  <td className="p-4 text-sm text-slate-400">{alarm.type} Violation</td>
-                  <td className="p-4 text-right font-mono text-white">{alarm.value}</td>
-                  <td className="p-4 text-right font-mono text-slate-400">{alarm.threshold}</td>
-                  <td className="p-4 text-center">
-                    <span className={`text-xs ${alarm.status === 'Active' ? 'text-white animate-pulse' : 'text-slate-500'}`}>
-                      {alarm.status}
-                    </span>
-                  </td>
-                  <td className="p-4 text-right">
-                    {alarm.status === 'Active' && (
-                      <button 
-                        onClick={() => acknowledgeAlarm(alarm.id)}
-                        className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded border border-slate-600"
-                      >
-                        Acknowledge
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))
+    return (
+        <div className="min-h-screen p-6">
+            <div className="mb-6">
+                <h1 className="text-2xl font-bold text-white">🚨 Alarms & Safety</h1>
+                <p className="text-slate-400 mt-1">Monitor and manage alarms for {unitId}</p>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <SummaryCard label="Total Active" value={summary?.total_active || 0} color="cyan" />
+                <SummaryCard label="HH (Critical)" value={summary?.by_level?.HH || 0} color="red" />
+                <SummaryCard label="H (High)" value={summary?.by_level?.H || 0} color="orange" />
+                <SummaryCard label="L (Low)" value={summary?.by_level?.L || 0} color="yellow" />
+                <SummaryCard label="LL (Low-Low)" value={summary?.by_level?.LL || 0} color="blue" />
+            </div>
+
+            {summary?.shutdown_active && (
+                <div className="mb-6 p-4 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-3">
+                    <span className="text-2xl">⛔</span>
+                    <div>
+                        <div className="text-red-400 font-semibold">SHUTDOWN ACTIVE</div>
+                        <div className="text-red-300 text-sm">Critical safety condition detected</div>
+                    </div>
+                </div>
             )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+
+            {/* Tabs */}
+            <div className="flex gap-2 mb-6">
+                {(['active', 'history', 'config'] as const).map(t => (
+                    <button key={t} onClick={() => setTab(t)}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === t ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50' : 'bg-slate-800/50 text-slate-400'
+                            }`}>
+                        {t === 'active' ? '🔴 Active' : t === 'history' ? '📋 History' : '⚙️ Configuration'}
+                    </button>
+                ))}
+            </div>
+
+            {/* Active Alarms Tab */}
+            {tab === 'active' && (
+                <div className="glass-card p-6">
+                    <h2 className="text-lg font-semibold text-white mb-4">Active Alarms</h2>
+                    {loading ? (
+                        <div className="text-slate-400 py-8 text-center">Loading alarms...</div>
+                    ) : activeAlarms.length === 0 ? (
+                        <div className="text-green-400 py-8 text-center flex flex-col items-center gap-2">
+                            <span className="text-4xl">✓</span>
+                            <span>No active alarms</span>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {activeAlarms.map(alarm => (
+                                <div key={alarm.id} className={`p-4 rounded-lg border ${getLevelColor(alarm.level)} flex items-center justify-between`}>
+                                    <div className="flex items-center gap-4">
+                                        <span className={`px-2 py-1 rounded text-xs font-bold ${getLevelColor(alarm.level)}`}>
+                                            {alarm.level}
+                                        </span>
+                                        <div>
+                                            <div className="font-medium">{alarm.parameter}</div>
+                                            <div className="text-sm opacity-75">
+                                                Value: {alarm.value.toFixed(1)} | Setpoint: {alarm.setpoint.toFixed(1)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <span className="text-xs opacity-75">
+                                            {new Date(alarm.timestamp).toLocaleTimeString()}
+                                        </span>
+                                        {!alarm.acknowledged && (
+                                            <button onClick={() => handleAcknowledge(alarm.id)}
+                                                className="px-3 py-1 bg-slate-700/50 hover:bg-slate-600/50 rounded text-xs">
+                                                Acknowledge
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* History Tab */}
+            {tab === 'history' && (
+                <div className="glass-card p-6">
+                    <h2 className="text-lg font-semibold text-white mb-4">Alarm History (Last 24h)</h2>
+                    <div className="text-slate-400 py-8 text-center">
+                        Alarm history will be populated from PostgreSQL database
+                    </div>
+                </div>
+            )}
+
+            {/* Config Tab */}
+            {tab === 'config' && (
+                <div className="glass-card p-6">
+                    <h2 className="text-lg font-semibold text-white mb-4">Alarm Setpoints</h2>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-b border-slate-700/50 text-slate-400 text-left">
+                                    <th className="py-2 px-3">Parameter</th>
+                                    <th className="py-2 px-3">LL</th>
+                                    <th className="py-2 px-3">L</th>
+                                    <th className="py-2 px-3">H</th>
+                                    <th className="py-2 px-3">HH</th>
+                                    <th className="py-2 px-3">Delay (s)</th>
+                                    <th className="py-2 px-3">Shutdown</th>
+                                </tr>
+                            </thead>
+                            <tbody className="text-slate-300">
+                                <SetpointRow param="stg1_discharge_temp" hh={350} h={300} />
+                                <SetpointRow param="stg2_discharge_temp" hh={350} h={300} />
+                                <SetpointRow param="stg3_discharge_temp" hh={350} h={300} />
+                                <SetpointRow param="oil_pressure" ll={20} l={30} shutdown />
+                                <SetpointRow param="coolant_temp" hh={220} h={200} shutdown />
+                                <SetpointRow param="engine_rpm" hh={1200} h={1100} />
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function SummaryCard({ label, value, color }: { label: string; value: number; color: string }) {
+    const colors: Record<string, string> = {
+        cyan: 'text-cyan-400',
+        red: 'text-red-400',
+        orange: 'text-orange-400',
+        yellow: 'text-yellow-400',
+        blue: 'text-blue-400'
+    };
+    return (
+        <div className="glass-card p-4">
+            <div className="text-slate-400 text-xs">{label}</div>
+            <div className={`text-2xl font-bold ${colors[color]}`}>{value}</div>
+        </div>
+    );
+}
+
+function SetpointRow({ param, ll, l, h, hh, delay = 10, shutdown = false }: any) {
+    return (
+        <tr className="border-b border-slate-700/30">
+            <td className="py-2 px-3">{param}</td>
+            <td className="py-2 px-3">{ll || '-'}</td>
+            <td className="py-2 px-3">{l || '-'}</td>
+            <td className="py-2 px-3">{h || '-'}</td>
+            <td className="py-2 px-3">{hh || '-'}</td>
+            <td className="py-2 px-3">{delay}</td>
+            <td className="py-2 px-3">{shutdown ? '⚠️ Yes' : 'No'}</td>
+        </tr>
+    );
 }
