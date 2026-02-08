@@ -1,5 +1,5 @@
 """
-Units API - Multi-unit management endpoints.
+Units API V2 - Multi-unit management endpoints with resolved data.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Optional
@@ -28,6 +28,12 @@ class UnitUpdate(BaseModel):
     modbus_host: Optional[str] = None
     modbus_port: Optional[int] = None
     is_active: Optional[bool] = None
+
+
+class ManualOverride(BaseModel):
+    parameter: str
+    value: float
+    expires_minutes: Optional[int] = None  # None = never expires
 
 
 @router.get("/")
@@ -69,6 +75,115 @@ async def get_unit(unit_id: str, current_user: dict = Depends(get_current_user))
     }
 
 
+@router.get("/{unit_id}/live")
+async def get_live_data(unit_id: str) -> Dict:
+    """Get raw live data from Modbus/SCADA for a unit."""
+    from app.services.unit_manager import get_unit_manager
+    
+    manager = get_unit_manager()
+    
+    if not manager.get_unit(unit_id):
+        raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
+    
+    live_data = manager.get_live_data(unit_id)
+    
+    return {
+        "unit_id": unit_id,
+        "timestamp": datetime.now().isoformat(),
+        **live_data
+    }
+
+
+@router.get("/{unit_id}/resolved")
+async def get_resolved_data(unit_id: str) -> Dict:
+    """
+    Get resolved data with quality indicators.
+    Returns values with source (LIVE or MANUAL) for each parameter.
+    This is the primary endpoint for the Dashboard.
+    """
+    from app.services.unit_manager import get_unit_manager
+    from app.services.data_resolver import get_data_resolver
+    
+    manager = get_unit_manager()
+    
+    if not manager.get_unit(unit_id):
+        raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
+    
+    # Get raw live data
+    live_data = manager.get_live_data(unit_id)
+    
+    # Resolve through the two-state resolver
+    resolver = get_data_resolver()
+    resolved = resolver.resolve_all(live_data)
+    
+    return {
+        "unit_id": unit_id,
+        "timestamp": resolved['timestamp'],
+        "sources": resolved['sources'],
+        **resolved['values']
+    }
+
+
+@router.post("/{unit_id}/manual")
+async def set_manual_override(
+    unit_id: str,
+    override: ManualOverride,
+    current_user: dict = Depends(require_engineer)
+) -> Dict:
+    """
+    Set a manual override for a parameter.
+    The override will take precedence over live data.
+    """
+    from app.services.unit_manager import get_unit_manager
+    from app.services.data_resolver import get_data_resolver
+    from datetime import timedelta
+    
+    manager = get_unit_manager()
+    
+    if not manager.get_unit(unit_id):
+        raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
+    
+    resolver = get_data_resolver()
+    
+    expires_at = None
+    if override.expires_minutes:
+        expires_at = datetime.now() + timedelta(minutes=override.expires_minutes)
+    
+    resolver.set_manual_value(override.parameter, override.value, expires_at)
+    
+    return {
+        "status": "success",
+        "parameter": override.parameter,
+        "value": override.value,
+        "expires_at": expires_at.isoformat() if expires_at else None
+    }
+
+
+@router.delete("/{unit_id}/manual/{parameter}")
+async def clear_manual_override(
+    unit_id: str,
+    parameter: str,
+    current_user: dict = Depends(require_engineer)
+) -> Dict:
+    """Clear a manual override for a parameter."""
+    from app.services.unit_manager import get_unit_manager
+    from app.services.data_resolver import get_data_resolver
+    
+    manager = get_unit_manager()
+    
+    if not manager.get_unit(unit_id):
+        raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
+    
+    resolver = get_data_resolver()
+    resolver.clear_manual_value(parameter)
+    
+    return {
+        "status": "success",
+        "parameter": parameter,
+        "message": f"Manual override cleared for {parameter}"
+    }
+
+
 @router.post("/")
 async def create_unit(
     unit: UnitCreate,
@@ -79,7 +194,6 @@ async def create_unit(
     
     manager = get_unit_manager()
     
-    # Check if unit already exists
     if manager.get_unit(unit.unit_id):
         raise HTTPException(status_code=400, detail=f"Unit {unit.unit_id} already exists")
     
@@ -141,35 +255,9 @@ async def get_unit_physics(unit_id: str) -> Dict:
     }
 
 
-@router.get("/{unit_id}/stages")
-async def get_unit_stages(unit_id: str) -> Dict:
-    """Get stage configuration for a unit."""
-    from app.services.unit_manager import get_unit_manager
-    
-    manager = get_unit_manager()
-    unit = manager.get_unit(unit_id)
-    
-    if not unit:
-        raise HTTPException(status_code=404, detail=f"Unit {unit_id} not found")
-    
-    # Return stage configurations
-    stages = []
-    for i in range(1, unit.stage_count + 1):
-        stages.append({
-            "stage": i,
-            "config": unit.stage_configs[i - 1] if unit.stage_configs and len(unit.stage_configs) >= i else None
-        })
-    
-    return {
-        "unit_id": unit_id,
-        "stage_count": unit.stage_count,
-        "stages": stages
-    }
-
-
 @router.get("/{unit_id}/summary")
 async def get_unit_summary(unit_id: str) -> Dict:
-    """Get quick summary of unit status including live data and alarms."""
+    """Get quick summary of unit status."""
     from app.services.unit_manager import get_unit_manager
     from app.services.alarm_engine import get_alarm_engine
     

@@ -1,6 +1,7 @@
 """
-GCS Digital Twin - FastAPI Backend v3.0
+GCS Digital Twin - FastAPI Backend v3.1
 Complete integration: Database, Alarm Engine, Multi-Unit, Extended Physics
+Added: Modbus Config API
 """
 
 import asyncio
@@ -10,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.routes import dashboard, diagrams, auth, trends, config, alarms, units_api
+from app.api.routes import dashboard, diagrams, auth, trends, config, alarms, units_api, modbus_config
 from app.services.modbus_poller import init_modbus_poller, get_modbus_poller
 from app.services.redis_cache import init_redis_cache, get_redis_cache
 from app.services.influxdb_writer import get_influx_writer
@@ -32,7 +33,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan events for startup and shutdown."""
     
-    logger.info("🚀 GCS Digital Twin Backend v3.0 starting...")
+    logger.info("🚀 GCS Digital Twin Backend v3.1 starting...")
     logger.info(f"   Modbus enabled: {settings.MODBUS_ENABLED}")
     
     # Initialize database (optional - graceful failure)
@@ -99,36 +100,39 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"   Modbus connection failed: {e}")
     
-    logger.info("✅ Backend v3.0 ready - All phases complete")
+    logger.info("✅ GCS Digital Twin Backend ready!")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down...")
+    logger.info("🛑 Shutting down...")
     
-    if settings.MODBUS_ENABLED:
-        try:
-            poller = get_modbus_poller()
-            await poller.disconnect()
-        except:
-            pass
+    poller = get_modbus_poller()
+    if poller:
+        await poller.stop()
+    
+    redis = get_redis_cache()
+    if redis:
+        await redis.close()
     
     try:
         from app.db.database import close_db
         await close_db()
     except:
         pass
+    
+    logger.info("👋 Goodbye!")
 
 
-# Create FastAPI application
+# Create FastAPI app
 app = FastAPI(
     title="GCS Digital Twin API",
-    description="Universal Digital Twin Platform for Gas Compressor Systems",
-    version="3.0.0",
+    description="Real-time digital twin for gas compressor systems",
+    version="3.1.0",
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -137,14 +141,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(dashboard.router)
-app.include_router(diagrams.router)
-app.include_router(alarms.router)
-app.include_router(units_api.router)  # Multi-unit management
+# Register routers
 app.include_router(auth.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
+app.include_router(diagrams.router, prefix="/api")
 app.include_router(trends.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
+app.include_router(alarms.router, prefix="/api")
+app.include_router(units_api.router)
+app.include_router(modbus_config.router, prefix="/api")
 
 
 @app.get("/health")
@@ -157,7 +162,7 @@ async def health_check():
         return {
             "status": "healthy",
             "service": "GCS Digital Twin Backend",
-            "version": "3.0.0",
+            "version": "3.1.0",
             "modbus_enabled": settings.MODBUS_ENABLED,
             "active_alarms": len(alarm_engine.active_alarms),
             "shutdown_active": alarm_engine.get_shutdown_active(),
@@ -169,7 +174,8 @@ async def health_check():
                 "alarm_engine": True,
                 "multi_unit": True,
                 "extended_physics": True,
-                "celery": True
+                "celery": True,
+                "modbus_config_api": True
             }
         }
     except Exception as e:
@@ -184,10 +190,10 @@ async def root():
     """Root endpoint with API info."""
     return {
         "name": "GCS Digital Twin API",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "docs": "/docs",
         "health": "/health",
-        "architecture_compliance": "Phase 1-4 Complete",
+        "architecture_compliance": "Phase 1-7 In Progress",
         "features": [
             "PostgreSQL config persistence",
             "Redis live data caching",
@@ -196,6 +202,9 @@ async def root():
             "Multi-unit management",
             "Extended physics (power, rod loads)",
             "Celery background tasks",
-            "User persistence"
+            "User persistence",
+            "Modbus config API",
+            "Two-state data resolver",
+            "Parameter-based trending"
         ]
     }

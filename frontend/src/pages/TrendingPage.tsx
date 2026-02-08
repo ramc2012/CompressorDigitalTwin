@@ -1,35 +1,40 @@
 /**
  * TrendingPage - Historical data visualization from InfluxDB
+ * Updated to use parameter-based trends API
  */
 import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useUnit } from '../contexts/UnitContext';
-import { fetchTrendData } from '../lib/api';
+
+const API_BASE = '/api';
 
 const PARAMETER_OPTIONS = [
+    { value: 'engine_rpm', label: 'Engine RPM', color: '#14b8a6' },
+    { value: 'engine_oil_pressure', label: 'Engine Oil Pressure', color: '#f97316' },
+    { value: 'engine_oil_temp', label: 'Engine Oil Temp', color: '#dc2626' },
+    { value: 'jacket_water_temp', label: 'Jacket Water Temp', color: '#0ea5e9' },
     { value: 'stg1_suction_pressure', label: 'Stage 1 Suction P', color: '#06b6d4' },
     { value: 'stg1_discharge_pressure', label: 'Stage 1 Discharge P', color: '#10b981' },
     { value: 'stg2_suction_pressure', label: 'Stage 2 Suction P', color: '#f59e0b' },
     { value: 'stg2_discharge_pressure', label: 'Stage 2 Discharge P', color: '#ef4444' },
     { value: 'stg3_suction_pressure', label: 'Stage 3 Suction P', color: '#8b5cf6' },
     { value: 'stg3_discharge_pressure', label: 'Stage 3 Discharge P', color: '#ec4899' },
-    { value: 'engine_rpm', label: 'Engine RPM', color: '#14b8a6' },
-    { value: 'oil_pressure', label: 'Oil Pressure', color: '#f97316' },
-    { value: 'coolant_temp', label: 'Coolant Temp', color: '#dc2626' },
+    { value: 'overall_ratio', label: 'Overall Ratio', color: '#a855f7' },
+    { value: 'total_bhp', label: 'Total BHP', color: '#22c55e' },
 ];
 
 const TIME_RANGES = [
-    { value: '1h', label: '1 Hour' },
-    { value: '4h', label: '4 Hours' },
-    { value: '24h', label: '24 Hours' },
-    { value: '7d', label: '7 Days' },
-    { value: '30d', label: '30 Days' },
+    { value: '-1h', label: '1 Hour' },
+    { value: '-4h', label: '4 Hours' },
+    { value: '-24h', label: '24 Hours' },
+    { value: '-7d', label: '7 Days' },
+    { value: '-30d', label: '30 Days' },
 ];
 
 export function TrendingPage() {
     const { unitId } = useUnit();
-    const [selectedParams, setSelectedParams] = useState<string[]>(['stg1_discharge_pressure', 'engine_rpm']);
-    const [timeRange, setTimeRange] = useState('1h');
+    const [selectedParams, setSelectedParams] = useState<string[]>(['engine_rpm', 'stg1_discharge_pressure']);
+    const [timeRange, setTimeRange] = useState('-1h');
     const [data, setData] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -42,26 +47,20 @@ export function TrendingPage() {
             setError(null);
 
             try {
-                const now = new Date();
-                let start: Date;
-
-                switch (timeRange) {
-                    case '1h': start = new Date(now.getTime() - 3600000); break;
-                    case '4h': start = new Date(now.getTime() - 4 * 3600000); break;
-                    case '24h': start = new Date(now.getTime() - 24 * 3600000); break;
-                    case '7d': start = new Date(now.getTime() - 7 * 24 * 3600000); break;
-                    case '30d': start = new Date(now.getTime() - 30 * 24 * 3600000); break;
-                    default: start = new Date(now.getTime() - 3600000);
-                }
-
-                const result = await fetchTrendData(unitId, {
-                    parameters: selectedParams,
-                    start: start.toISOString(),
-                    end: now.toISOString(),
-                    aggregation: timeRange === '30d' ? '1h' : timeRange === '7d' ? '5m' : '1m'
+                // Use the new parameter-based trends API
+                const params = new URLSearchParams({
+                    parameters: selectedParams.join(','),
+                    start: timeRange
                 });
 
-                setData(result.data || []);
+                const response = await fetch(`${API_BASE}/trends/${unitId}?${params}`);
+                if (!response.ok) throw new Error('Failed to fetch trends');
+
+                const result = await response.json();
+
+                // Transform the response to chart-friendly format
+                const chartData = transformTrendData(result.parameters, selectedParams);
+                setData(chartData);
             } catch (e) {
                 setError('Failed to load trend data. InfluxDB may not have data yet.');
                 // Generate demo data for display
@@ -96,8 +95,8 @@ export function TrendingPage() {
                             {TIME_RANGES.map(tr => (
                                 <button key={tr.value} onClick={() => setTimeRange(tr.value)}
                                     className={`px-3 py-1.5 rounded text-sm ${timeRange === tr.value
-                                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
-                                            : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'
+                                        ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
+                                        : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'
                                         }`}>
                                     {tr.label}
                                 </button>
@@ -110,8 +109,8 @@ export function TrendingPage() {
                             {PARAMETER_OPTIONS.map(param => (
                                 <button key={param.value} onClick={() => toggleParam(param.value)}
                                     className={`px-3 py-1.5 rounded text-xs flex items-center gap-2 ${selectedParams.includes(param.value)
-                                            ? 'bg-slate-700/50 text-white border border-slate-600/50'
-                                            : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'
+                                        ? 'bg-slate-700/50 text-white border border-slate-600/50'
+                                        : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'
                                         }`}>
                                     <span className="w-3 h-3 rounded-full" style={{ backgroundColor: param.color }} />
                                     {param.label}
@@ -202,8 +201,28 @@ function KPICard({ title, value, change, positive = false }: { title: string; va
     );
 }
 
+function transformTrendData(parameters: Record<string, any>, selectedParams: string[]): any[] {
+    // Merge all parameter data into chart-friendly format
+    const timeMap = new Map<string, any>();
+
+    for (const param of selectedParams) {
+        const paramData = parameters[param]?.data || [];
+        for (const point of paramData) {
+            const time = point.time;
+            if (!timeMap.has(time)) {
+                timeMap.set(time, { time });
+            }
+            timeMap.get(time)[param] = point.value;
+        }
+    }
+
+    return Array.from(timeMap.values()).sort((a, b) =>
+        new Date(a.time).getTime() - new Date(b.time).getTime()
+    );
+}
+
 function generateDemoData(params: string[], range: string): any[] {
-    const points = range === '1h' ? 60 : range === '4h' ? 48 : 24;
+    const points = range === '-1h' ? 60 : range === '-4h' ? 48 : 24;
     const now = new Date();
 
     return Array(points).fill(null).map((_, i) => {
