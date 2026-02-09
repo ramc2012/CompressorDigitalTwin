@@ -1,5 +1,5 @@
 """
-Modbus Config API - Manage register mappings in the database.
+Modbus Config API - Manage register mappings and server configuration.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,63 +10,152 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from app.db.database import get_db
-from app.db.models import RegisterMapping
+from app.db.models import RegisterMapping, ModbusServerConfig
 from ..routes.auth import require_engineer
 
-router = APIRouter(prefix="/config/modbus", tags=["Modbus Configuration"])
+router = APIRouter(prefix="/api/config/modbus", tags=["Modbus Configuration"])
 
 
 class RegisterMappingCreate(BaseModel):
-    register_address: int
-    register_name: str
-    parameter_name: str
-    data_type: str = "uint16"
-    scale_factor: float = 1.0
-    offset: float = 0.0
-    unit: Optional[str] = None
+    address: int
+    name: str
     description: Optional[str] = None
+    unit: Optional[str] = None
+    scale: float = 1.0
+    offset: float = 0.0
+    dataType: str = "uint16" 
+    pollGroup: str = "A"
+    category: str = "general"
 
 
 class RegisterMappingUpdate(BaseModel):
-    register_name: Optional[str] = None
-    parameter_name: Optional[str] = None
-    data_type: Optional[str] = None
-    scale_factor: Optional[float] = None
-    offset: Optional[float] = None
-    unit: Optional[str] = None
+    name: Optional[str] = None
     description: Optional[str] = None
+    unit: Optional[str] = None
+    scale: Optional[float] = None
+    offset: Optional[float] = None
+    dataType: Optional[str] = None
+    pollGroup: Optional[str] = None
+    category: Optional[str] = None
+
+class ModbusGlobalConfig(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 502
+    slave_id: int = 1
+    timeout_ms: int = 1000
+    scan_rate_ms: int = 1000
+
+class ModbusConfigFull(BaseModel):
+    server: Optional[ModbusGlobalConfig] = None
+    registers: Optional[List[Dict]] = None
 
 
 @router.get("/")
-async def list_register_mappings(
+async def get_modbus_config(
     unit_id: str = "GCS-001",
     db: AsyncSession = Depends(get_db)
 ) -> Dict:
-    """Get all register mappings for a unit."""
-    result = await db.execute(
+    """Get full Modbus configuration (registers + server settings)."""
+    # Get Registers
+    result_regs = await db.execute(
         select(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
     )
-    mappings = result.scalars().all()
+    mappings = result_regs.scalars().all()
     
+    # Get Server Config
+    result_conf = await db.execute(
+        select(ModbusServerConfig).where(ModbusServerConfig.unit_id == unit_id)
+    )
+    server_conf = result_conf.scalar_one_or_none()
+    
+    server_data = {
+        "host": server_conf.host if server_conf else "0.0.0.0",
+        "port": server_conf.port if server_conf else 502,
+        "slave_id": server_conf.slave_id if server_conf else 1,
+        "timeout_ms": server_conf.timeout_ms if server_conf else 1000,
+        "scan_rate_ms": server_conf.scan_rate_ms if server_conf else 1000
+    }
+
     return {
         "unit_id": unit_id,
-        "mappings": [
+        "server": server_data,
+        "registers": [
             {
                 "id": m.id,
-                "register_address": m.register_address,
-                "register_name": m.register_name,
-                "parameter_name": m.parameter_name,
-                "data_type": m.data_type,
-                "scale_factor": m.scale_factor,
-                "offset": m.offset,
+                "address": m.address, 
+                "name": m.name,
+                "description": m.description,
                 "unit": m.unit,
-                "description": m.description
+                "scale": m.scale,
+                "offset": m.offset,
+                "dataType": m.data_type,
+                "pollGroup": m.poll_group,
+                "category": m.category
             }
             for m in mappings
         ],
         "count": len(mappings)
     }
 
+
+@router.put("/")
+async def update_modbus_config(
+    config: ModbusConfigFull,
+    unit_id: str = "GCS-001",
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_engineer)
+) -> Dict:
+    """
+    Update global Modbus configuration and optionally bulk update registers.
+    Frontend sends { server: {...}, registers: [...] }
+    """
+    
+    # 1. Update Server Config
+    if config.server:
+        result = await db.execute(
+            select(ModbusServerConfig).where(ModbusServerConfig.unit_id == unit_id)
+        )
+        server_conf = result.scalar_one_or_none()
+        
+        if not server_conf:
+            server_conf = ModbusServerConfig(unit_id=unit_id)
+            db.add(server_conf)
+        
+        server_conf.host = config.server.host
+        server_conf.port = config.server.port
+        server_conf.slave_id = config.server.slave_id
+        server_conf.timeout_ms = config.server.timeout_ms
+        server_conf.scan_rate_ms = config.server.scan_rate_ms
+    
+    # 2. Update Registers if provided (Sync approach: delete all and recreate is safest for this UI)
+    if config.registers is not None:
+        # Delete existing
+        await db.execute(
+            delete(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
+        )
+        
+        # Create new
+        for r in config.registers:
+            new_reg = RegisterMapping(
+                unit_id=unit_id,
+                address=r.get('address'),
+                name=r.get('name'),
+                description=r.get('description'),
+                unit=r.get('unit'),
+                scale=r.get('scale', 1.0),
+                offset=r.get('offset', 0.0),
+                data_type=r.get('dataType', 'uint16'),
+                poll_group=r.get('pollGroup', 'A'),
+                category=r.get('category', 'general')
+            )
+            db.add(new_reg)
+            
+    await db.commit()
+    
+    # Reload poller
+    await _reload_modbus_poller(unit_id)
+
+    return {"status": "updated", "unit_id": unit_id}
 
 @router.post("/")
 async def create_register_mapping(
@@ -78,14 +167,15 @@ async def create_register_mapping(
     """Create a new register mapping."""
     new_mapping = RegisterMapping(
         unit_id=unit_id,
-        register_address=mapping.register_address,
-        register_name=mapping.register_name,
-        parameter_name=mapping.parameter_name,
-        data_type=mapping.data_type,
-        scale_factor=mapping.scale_factor,
-        offset=mapping.offset,
+        address=mapping.address,
+        name=mapping.name,
+        description=mapping.description,
         unit=mapping.unit,
-        description=mapping.description
+        scale=mapping.scale,
+        offset=mapping.offset,
+        data_type=mapping.dataType,
+        poll_group=mapping.pollGroup,
+        category=mapping.category
     )
     
     db.add(new_mapping)
@@ -98,110 +188,8 @@ async def create_register_mapping(
     return {
         "status": "created",
         "id": new_mapping.id,
-        "register_address": new_mapping.register_address
+        "address": new_mapping.address
     }
-
-
-@router.put("/{mapping_id}")
-async def update_register_mapping(
-    mapping_id: int,
-    updates: RegisterMappingUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_engineer)
-) -> Dict:
-    """Update an existing register mapping."""
-    result = await db.execute(
-        select(RegisterMapping).where(RegisterMapping.id == mapping_id)
-    )
-    mapping = result.scalar_one_or_none()
-    
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-    
-    for field, value in updates.dict(exclude_unset=True).items():
-        setattr(mapping, field, value)
-    
-    await db.commit()
-    
-    # Trigger poller reload
-    await _reload_modbus_poller(mapping.unit_id)
-    
-    return {"status": "updated", "id": mapping_id}
-
-
-@router.delete("/{mapping_id}")
-async def delete_register_mapping(
-    mapping_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_engineer)
-) -> Dict:
-    """Delete a register mapping."""
-    result = await db.execute(
-        select(RegisterMapping).where(RegisterMapping.id == mapping_id)
-    )
-    mapping = result.scalar_one_or_none()
-    
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-    
-    unit_id = mapping.unit_id
-    await db.delete(mapping)
-    await db.commit()
-    
-    # Trigger poller reload
-    await _reload_modbus_poller(unit_id)
-    
-    return {"status": "deleted", "id": mapping_id}
-
-
-@router.post("/reload")
-async def reload_modbus_poller(
-    unit_id: str = "GCS-001",
-    current_user: dict = Depends(require_engineer)
-) -> Dict:
-    """Manually trigger a Modbus poller reload."""
-    await _reload_modbus_poller(unit_id)
-    return {"status": "reloaded", "unit_id": unit_id}
-
-
-@router.post("/bulk")
-async def bulk_update_mappings(
-    mappings: List[RegisterMappingCreate],
-    unit_id: str = "GCS-001",
-    replace: bool = False,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_engineer)
-) -> Dict:
-    """
-    Bulk create/update register mappings.
-    If replace=True, deletes all existing mappings first.
-    """
-    if replace:
-        await db.execute(
-            delete(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
-        )
-    
-    created = 0
-    for m in mappings:
-        new_mapping = RegisterMapping(
-            unit_id=unit_id,
-            register_address=m.register_address,
-            register_name=m.register_name,
-            parameter_name=m.parameter_name,
-            data_type=m.data_type,
-            scale_factor=m.scale_factor,
-            offset=m.offset,
-            unit=m.unit,
-            description=m.description
-        )
-        db.add(new_mapping)
-        created += 1
-    
-    await db.commit()
-    await _reload_modbus_poller(unit_id)
-    
-    return {"status": "success", "created": created, "replaced": replace}
-
 
 async def _reload_modbus_poller(unit_id: str):
     """Internal function to reload the Modbus poller configuration."""

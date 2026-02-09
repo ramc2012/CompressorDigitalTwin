@@ -249,3 +249,24 @@ class AlarmHistory(Base):
     
     is_shutdown: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+# ============ MODBUS SERVER CONFIG MODEL ============
+
+class ModbusServerConfig(Base):
+    """Modbus TCP Server connection settings."""
+    __tablename__ = "modbus_server_config"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    unit_id: Mapped[str] = mapped_column(String(50), ForeignKey("units.unit_id"), unique=True)
+    
+    host: Mapped[str] = mapped_column(String(50), default="0.0.0.0")
+    port: Mapped[int] = mapped_column(Integer, default=502)
+    slave_id: Mapped[int] = mapped_column(Integer, default=1)
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=1000)
+    scan_rate_ms: Mapped[int] = mapped_column(Integer, default=1000)
+    
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    # Note: Unit needs to list this if we want back_populates, or we can skip it.
+    # For simplicity, we won't change Unit model to avoid touching existing code too much.
