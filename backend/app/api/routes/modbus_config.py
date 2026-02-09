@@ -50,7 +50,7 @@ class ModbusConfigFull(BaseModel):
     registers: Optional[List[Dict]] = None
 
 
-@router.get("/")
+@router.get("")
 async def get_modbus_config(
     unit_id: str = "GCS-001",
     db: AsyncSession = Depends(get_db)
@@ -98,7 +98,7 @@ async def get_modbus_config(
     }
 
 
-@router.put("/")
+@router.put("")
 async def update_modbus_config(
     config: ModbusConfigFull,
     unit_id: str = "GCS-001",
@@ -157,7 +157,7 @@ async def update_modbus_config(
 
     return {"status": "updated", "unit_id": unit_id}
 
-@router.post("/")
+@router.post("")
 async def create_register_mapping(
     mapping: RegisterMappingCreate,
     unit_id: str = "GCS-001",
