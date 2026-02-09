@@ -84,7 +84,7 @@ async def get_modbus_config(
                     "scale": r.get('scale', 1.0),
                     "offset": r.get('offset', 0.0),
                     "dataType": r.get('data_type', 'uint16'),
-                    "pollGroup": r.get('poll_group', 'A'), # FIXED: Don't use category here
+                    "pollGroup": r.get('poll_group', 'A'), # Map category or group
                     "category": r.get('category', 'general'),
                     "min": r.get('min'),
                     "max": r.get('max'),
@@ -191,6 +191,9 @@ async def update_modbus_config(
         
         # Create new
         for r in config.registers:
+            # Ensure poll_group fits in VARCHAR(1)
+            poll_group_val = str(r.get('pollGroup') if r.get('pollGroup') else r.get('category', 'A'))[:1]
+            
             new_reg = RegisterMapping(
                 unit_id=unit_id,
                 address=r.get('address'),
@@ -200,7 +203,7 @@ async def update_modbus_config(
                 scale=r.get('scale', 1.0),
                 offset=r.get('offset', 0.0),
                 data_type=r.get('dataType', 'uint16'),
-                poll_group=str(r.get('pollGroup', 'A'))[:1], # Ensure 1 char
+                poll_group=poll_group_val,
                 category=r.get('category', 'general')
             )
             db.add(new_reg)
@@ -209,15 +212,12 @@ async def update_modbus_config(
     
     # 3. WRITE TO YAML (Source of truth for Simulator)
     try:
+        # Defaults
         full_config = {
-            "server": {
-                "host": config.server.host if config.server else "0.0.0.0",
-                "port": config.server.port if config.server else 5020,
-                "slave_id": config.server.slave_id if config.server else 1
-            },
+            "server": {},
             "simulation": {
                 "update_interval_ms": 100,
-                "noise_enabled": True, # Resetting or could add to API
+                "noise_enabled": True,
                 "trend_enabled": True
             },
             "engine_states": {
@@ -227,16 +227,44 @@ async def update_modbus_config(
             },
             "registers": []
         }
-        
-        if config.registers:
+
+        # Read existing YAML to preserve data if partial update
+        config_path = "/app/shared_config/registers.yaml"
+        if os.path.exists(config_path):
+             try:
+                with open(config_path, "r") as f:
+                    existing = yaml.safe_load(f) or {}
+                    if existing.get("simulation"): full_config["simulation"] = existing["simulation"]
+                    if existing.get("engine_states"): full_config["engine_states"] = existing["engine_states"]
+                    if existing.get("registers"): full_config["registers"] = existing["registers"]
+                    if existing.get("server"): full_config["server"] = existing["server"]
+             except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to read existing YAML for merge: {e}")
+
+        # Override Server
+        if config.server:
+            full_config["server"] = {
+                "host": config.server.host,
+                "port": config.server.port,
+                "slave_id": config.server.slave_id
+            }
+
+        # Override Registers ONLY if provided
+        if config.registers is not None:
+            full_config["registers"] = []
             for r in config.registers:
                 # Map API fields back to YAML format
+                # Ensure poll_group fits 
+                poll_group_val = str(r.get('pollGroup') if r.get('pollGroup') else r.get('category', 'A'))[:1]
+
                 reg_dict = {
                     "address": r.get('address'),
                     "name": r.get('name'),
                     "description": r.get('description'),
                     "data_type": r.get('dataType', 'UINT16').upper(),
                     "category": r.get('category', 'general'),
+                    "poll_group": poll_group_val
                 }
                 # Optional fields
                 if 'default' in r: reg_dict['default'] = r['default']
@@ -249,7 +277,7 @@ async def update_modbus_config(
                 
                 full_config["registers"].append(reg_dict)
                 
-        with open("/app/shared_config/registers.yaml", "w") as f:
+        with open(config_path, "w") as f:
             yaml.dump(full_config, f, default_flow_style=False, sort_keys=False)
             
     except Exception as e:
