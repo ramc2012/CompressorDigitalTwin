@@ -8,6 +8,8 @@ from sqlalchemy import select, delete
 from typing import List, Optional, Dict
 from pydantic import BaseModel
 from datetime import datetime
+import yaml
+import os
 
 from app.db.database import get_db
 from app.db.models import RegisterMapping, ModbusServerConfig
@@ -37,6 +39,7 @@ class RegisterMappingUpdate(BaseModel):
     dataType: Optional[str] = None
     pollGroup: Optional[str] = None
     category: Optional[str] = None
+    category: Optional[str] = None
 
 class ModbusGlobalConfig(BaseModel):
     host: str = "0.0.0.0"
@@ -55,7 +58,58 @@ async def get_modbus_config(
     unit_id: str = "GCS-001",
     db: AsyncSession = Depends(get_db)
 ) -> Dict:
-    """Get full Modbus configuration (registers + server settings)."""
+    """Get full Modbus configuration. Prefers YAML file for complete simulation data."""
+    
+    # Try reading from shared config file first (Sim Source of Truth)
+    config_path = "/app/shared_config/registers.yaml"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                yaml_data = yaml.safe_load(f) or {}
+                
+            # Transform YAML format to API format
+            params = yaml_data.get('simulation', {})
+            server = yaml_data.get('server', {})
+            registers = yaml_data.get('registers', [])
+            
+            # Ensure registers have minimal required fields
+            api_regs = []
+            for r in registers:
+                api_regs.append({
+                    "id": r.get('address'), # Use address as ID for YAML source
+                    "address": r.get('address'),
+                    "name": r.get('name'),
+                    "description": r.get('description'),
+                    "unit": r.get('unit'),
+                    "scale": r.get('scale', 1.0),
+                    "offset": r.get('offset', 0.0),
+                    "dataType": r.get('data_type', 'uint16'),
+                    "pollGroup": r.get('poll_group', 'A'), # FIXED: Don't use category here
+                    "category": r.get('category', 'general'),
+                    "min": r.get('min'),
+                    "max": r.get('max'),
+                    "nominal": r.get('nominal'),
+                    "currentValue": r.get('nominal') # For frontend slider
+                })
+
+            return {
+                "unit_id": unit_id,
+                "server": {
+                    "host": server.get('host', '0.0.0.0'),
+                    "port": server.get('port', 5020),
+                    "slave_id": server.get('slave_id', 1),
+                    "timeout_ms": 1000,
+                    "scan_rate_ms": params.get('update_interval_ms', 100)
+                },
+                "registers": api_regs,
+                "count": len(api_regs),
+                "source": "yaml"
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to read YAML config: {e}")
+            # Fallback to DB below
+
     # Get Registers
     result_regs = await db.execute(
         select(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
@@ -94,7 +148,8 @@ async def get_modbus_config(
             }
             for m in mappings
         ],
-        "count": len(mappings)
+        "count": len(mappings),
+        "source": "db"
     }
 
 
@@ -145,13 +200,62 @@ async def update_modbus_config(
                 scale=r.get('scale', 1.0),
                 offset=r.get('offset', 0.0),
                 data_type=r.get('dataType', 'uint16'),
-                poll_group=r.get('pollGroup', 'A'),
+                poll_group=str(r.get('pollGroup', 'A'))[:1], # Ensure 1 char
                 category=r.get('category', 'general')
             )
             db.add(new_reg)
             
     await db.commit()
     
+    # 3. WRITE TO YAML (Source of truth for Simulator)
+    try:
+        full_config = {
+            "server": {
+                "host": config.server.host if config.server else "0.0.0.0",
+                "port": config.server.port if config.server else 5020,
+                "slave_id": config.server.slave_id if config.server else 1
+            },
+            "simulation": {
+                "update_interval_ms": 100,
+                "noise_enabled": True, # Resetting or could add to API
+                "trend_enabled": True
+            },
+            "engine_states": {
+                0: "STOPPED", 1: "PRE_LUBE", 2: "CRANKING", 3: "IDLE_WARMUP", 
+                4: "LOADING", 8: "RUNNING", 16: "UNLOADING", 32: "COOLDOWN", 
+                64: "SHUTDOWN", 255: "FAULT"
+            },
+            "registers": []
+        }
+        
+        if config.registers:
+            for r in config.registers:
+                # Map API fields back to YAML format
+                reg_dict = {
+                    "address": r.get('address'),
+                    "name": r.get('name'),
+                    "description": r.get('description'),
+                    "data_type": r.get('dataType', 'UINT16').upper(),
+                    "category": r.get('category', 'general'),
+                }
+                # Optional fields
+                if 'default' in r: reg_dict['default'] = r['default']
+                if 'scale' in r: reg_dict['scale'] = r['scale']
+                if 'nominal' in r: reg_dict['nominal'] = r['nominal']
+                if 'min' in r: reg_dict['min'] = r['min']
+                if 'max' in r: reg_dict['max'] = r['max']
+                if 'unit' in r: reg_dict['unit'] = r['unit']
+                if 'noise' in r: reg_dict['noise'] = r['noise']
+                
+                full_config["registers"].append(reg_dict)
+                
+        with open("/app/shared_config/registers.yaml", "w") as f:
+            yaml.dump(full_config, f, default_flow_style=False, sort_keys=False)
+            
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to write registers.yaml: {e}")
+
     # Reload poller
     await _reload_modbus_poller(unit_id)
 
@@ -197,7 +301,7 @@ async def _reload_modbus_poller(unit_id: str):
         from app.services.modbus_poller import get_modbus_poller
         poller = get_modbus_poller()
         if poller and hasattr(poller, 'reload_config'):
-            await poller.reload_config(unit_id)
+            await poller.reload_config()
     except Exception as e:
         # Log but don't fail the request
         import logging

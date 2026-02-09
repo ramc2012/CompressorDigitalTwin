@@ -14,7 +14,7 @@ from app.db.models import AlarmSetpoint as AlarmSetpointModel
 from app.services.alarm_engine import get_alarm_engine, AlarmSetpoint
 from ..routes.auth import require_engineer
 
-router = APIRouter(prefix="/alarms/setpoints", tags=["Alarm Configuration"])
+router = APIRouter(prefix="/api/alarms/setpoints", tags=["Alarm Configuration"])
 
 
 class AlarmSetpointCreate(BaseModel):

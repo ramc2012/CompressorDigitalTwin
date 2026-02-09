@@ -10,7 +10,7 @@ from datetime import datetime
 
 from app.services.influxdb_writer import get_influx_writer
 
-router = APIRouter(prefix="/trends", tags=["Historical Trends"])
+router = APIRouter(prefix="/api/trends", tags=["Historical Trends"])
 
 
 # Parameter to measurement/field mapping

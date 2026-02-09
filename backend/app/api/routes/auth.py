@@ -12,7 +12,7 @@ from typing import List
 from app.services.auth_service import get_auth_service
 from app.db.database import get_db
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 

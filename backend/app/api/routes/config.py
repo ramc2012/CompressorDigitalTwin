@@ -16,7 +16,7 @@ from app.services.unit_manager import get_unit_manager
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/config", tags=["Configuration"])
+router = APIRouter(prefix="/api/config", tags=["Configuration"])
 
 # ============ Pydantic Models for Request/Response ============
 

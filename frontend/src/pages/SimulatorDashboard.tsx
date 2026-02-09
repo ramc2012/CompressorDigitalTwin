@@ -60,7 +60,18 @@ export function SimulatorDashboard() {
         setSaveSuccess(false);
 
         try {
-            const configPayload = {
+                        const configPayload = {
+                server: {
+                    host: connection.ip,
+                    port: connection.port,
+                    slave_id: connection.slaveId
+                },
+                registers: registers.map(reg => ({
+                    ...reg,
+                    nominal: reg.currentValue,
+                    default: reg.currentValue
+                }))
+            };
                 server: {
                     host: connection.ip,
                     port: connection.port,
