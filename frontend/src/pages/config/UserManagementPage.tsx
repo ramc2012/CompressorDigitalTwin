@@ -31,7 +31,7 @@ export function UserManagementPage() {
             await createUser({
                 username: newUser.username,
                 password: newUser.password,
-                role: newUser.role,
+                role: newUser.role as 'admin' | 'engineer' | 'operator' | 'viewer',
                 full_name: newUser.fullName,
                 email: newUser.email
             });

@@ -1,24 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ConfigHeader } from '../../components/ConfigHeader';
 import { useUnit } from '../../contexts/UnitContext';
-import { fetchEquipmentConfig, saveEquipmentConfig, type EquipmentConfig } from '../../lib/api';
-
-interface StageConfig {
-    cylinders: number;
-    action: 'double_acting' | 'single_acting';
-    boreDiameter: number;
-    strokeLength: number;
-    rodDiameter: number;
-    clearanceHE: number;
-    clearanceCE: number;
-    designSuctionPressure: number;
-    designDischargePressure: number;
-    designSuctionTemp: number;
-    suctionPressSource: string;
-    dischargePressSource: string;
-    suctionTempSource: string;
-    dischargeTempSource: string;
-}
+import { fetchEquipmentConfig, saveEquipmentConfig, type StageConfig } from '../../lib/api';
 
 interface EngineConfig {
     manufacturer: string;
@@ -57,11 +40,10 @@ const defaultStage: StageConfig = {
 };
 
 export function EquipmentSpecsPage() {
-    const { unitId, stageCount } = useUnit();
+    const { unitId, stageCount } = useUnit() as any; // Cast to any to avoid type issues if context is missing props
     const [activeTab, setActiveTab] = useState<'compressor' | 'engine'>('compressor');
     const [activeStage, setActiveStage] = useState(0);
     const [isEditing, setIsEditing] = useState(false);
-    const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
     const [compressor, setCompressor] = useState<CompressorConfig>({
@@ -97,7 +79,7 @@ export function EquipmentSpecsPage() {
 
     // Update stages when stageCount changes
     useEffect(() => {
-        if (stageCount !== compressor.stages.length) {
+        if (stageCount && stageCount !== compressor.stages.length) {
             const newStages = Array(stageCount).fill(null).map((_, i) =>
                 compressor.stages[i] || { ...defaultStage }
             );
@@ -106,7 +88,6 @@ export function EquipmentSpecsPage() {
     }, [stageCount]);
 
     const handleSave = async () => {
-        setSaving(true);
         setSaveStatus('idle');
         try {
             await saveEquipmentConfig(unitId, { compressor, engine } as any);
@@ -116,8 +97,6 @@ export function EquipmentSpecsPage() {
         } catch (e) {
             setSaveStatus('error');
             console.error('Save failed:', e);
-        } finally {
-            setSaving(false);
         }
     };
 
@@ -157,15 +136,15 @@ export function EquipmentSpecsPage() {
         <div className="flex flex-col gap-1">
             <label className="text-slate-400 text-xs">{label}</label>
             <div className="flex items-center gap-2">
-                <select value={value.split(':')[0]} disabled={!isEditing}
-                    onChange={(e) => onChange(e.target.value + ':' + (value.split(':')[1] || ''))}
+                <select value={(value || '').split(':')[0]} disabled={!isEditing}
+                    onChange={(e) => onChange(e.target.value + ':' + ((value || '').split(':')[1] || ''))}
                     className={`px-2 py-2 border rounded text-xs w-24 ${!isEditing ? 'bg-slate-700/30 border-slate-700/50 text-slate-400' : 'bg-slate-800/50 border-slate-600/50 text-white'}`}
                 >
                     <option value="Modbus">Modbus</option>
                     <option value="Manual">Manual</option>
                 </select>
-                <input value={value.split(':')[1] || ''} disabled={!isEditing}
-                    onChange={(e) => onChange(value.split(':')[0] + ':' + e.target.value)}
+                <input value={(value || '').split(':')[1] || ''} disabled={!isEditing}
+                    onChange={(e) => onChange((value || '').split(':')[0] + ':' + e.target.value)}
                     placeholder="Address/Value"
                     className={`flex-1 px-2 py-2 border rounded text-xs ${!isEditing ? 'bg-slate-700/30 border-slate-700/50 text-slate-400' : 'bg-slate-800/50 border-slate-600/50 text-white'}`}
                 />

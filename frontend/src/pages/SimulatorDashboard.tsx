@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { ConfigHeader } from '../components/ConfigHeader';
 import { initialRegisters } from '../data/initialRegisters';
 import { fetchModbusConfig, updateModbusConfig } from '../lib/api';
-import { useAuthStore } from '../store/useAuthStore';
 import type { RegisterDef } from '../data/initialRegisters';
 
 interface SimRegister extends RegisterDef {
@@ -23,8 +22,7 @@ export function SimulatorDashboard() {
     const [isSaving, setIsSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
     const [saveSuccess, setSaveSuccess] = useState(false);
-    const token = useAuthStore((state) => state.token);
-
+    
     // Connection Settings
     const [connection, setConnection] = useState({
         ip: '0.0.0.0',
@@ -70,7 +68,7 @@ export function SimulatorDashboard() {
                 }
             };
 
-            await updateModbusConfig(configPayload, token || undefined);
+            await updateModbusConfig(configPayload);
             setSaveSuccess(true);
             setIsEditing(false);
 

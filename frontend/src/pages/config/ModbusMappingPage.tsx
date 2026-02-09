@@ -116,7 +116,7 @@ export function ModbusMappingPage() {
                         <tbody className="text-slate-300">
                             {filteredRegisters.length === 0 ? (
                                 <tr><td colSpan={8} className="p-4 text-center text-slate-500">No registers found</td></tr>
-                            ) : filteredRegisters.map((reg, originalIndex) => {
+                            ) : filteredRegisters.map((reg) => {
                                 // Find actual index in main array for editing
                                 const index = registers.indexOf(reg);
                                 return (

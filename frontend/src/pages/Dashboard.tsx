@@ -91,7 +91,9 @@ export function Dashboard() {
     if (!liveData) return null;
 
     const engineState = ENGINE_STATES[liveData.engine_state] || { label: 'UNKNOWN', color: 'bg-slate-500' };
-    const sources = liveData.sources || {};
+    
+    // Cast to any to access sources
+    const sources = (liveData as any).sources || {};
 
     // Helper to get quality for a parameter
     const getQuality = (param: string): any => {

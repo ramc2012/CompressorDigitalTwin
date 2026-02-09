@@ -1,6 +1,6 @@
 /**
  * GCS Digital Twin - Main Application with Full Routing
- * Updated for Phase 5: UnitProvider, TrendingPage, AlarmsPage
+ * Updated: Added AlarmConfigPage route
  */
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Layout } from './components/Layout';
@@ -19,6 +19,7 @@ import { GasPropertiesPage } from './pages/config/GasPropertiesPage';
 import { SiteConditionsPage } from './pages/config/SiteConditionsPage';
 import { ModbusMappingPage } from './pages/config/ModbusMappingPage';
 import { UserManagementPage } from './pages/config/UserManagementPage';
+import { AlarmConfigPage } from './pages/AlarmConfigPage';
 import './index.css';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -51,6 +52,7 @@ function App() {
                                         <Route path="/config/site" element={<SiteConditionsPage />} />
                                         <Route path="/config/modbus" element={<ModbusMappingPage />} />
                                         <Route path="/config/users" element={<UserManagementPage />} />
+                                        <Route path="/config/alarms" element={<AlarmConfigPage />} />
 
                                         <Route path="/simulator" element={<SimulatorDashboard />} />
                                     </Routes>
