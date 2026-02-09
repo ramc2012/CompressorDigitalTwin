@@ -30,23 +30,20 @@ class RegisterMappingCreate(BaseModel):
     category: str = "general"
 
 
-class RegisterMappingUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    unit: Optional[str] = None
-    scale: Optional[float] = None
-    offset: Optional[float] = None
-    dataType: Optional[str] = None
-    pollGroup: Optional[str] = None
-    category: Optional[str] = None
-    category: Optional[str] = None
-
 class ModbusGlobalConfig(BaseModel):
+    # Active connection (will be populated based on mode for output)
     host: str = "0.0.0.0"
     port: int = 502
     slave_id: int = 1
     timeout_ms: int = 1000
     scan_rate_ms: int = 1000
+    
+    # Mode Settings
+    use_simulation: bool = True
+    real_host: Optional[str] = None
+    real_port: Optional[int] = None
+    sim_host: str = "simulator"
+    sim_port: int = 5020
 
 class ModbusConfigFull(BaseModel):
     server: Optional[ModbusGlobalConfig] = None
@@ -58,59 +55,10 @@ async def get_modbus_config(
     unit_id: str = "GCS-001",
     db: AsyncSession = Depends(get_db)
 ) -> Dict:
-    """Get full Modbus configuration. Prefers YAML file for complete simulation data."""
+    """Get full Modbus configuration."""
     
-    # Try reading from shared config file first (Sim Source of Truth)
-    config_path = "/app/shared_config/registers.yaml"
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                yaml_data = yaml.safe_load(f) or {}
-                
-            # Transform YAML format to API format
-            params = yaml_data.get('simulation', {})
-            server = yaml_data.get('server', {})
-            registers = yaml_data.get('registers', [])
-            
-            # Ensure registers have minimal required fields
-            api_regs = []
-            for r in registers:
-                api_regs.append({
-                    "id": r.get('address'), # Use address as ID for YAML source
-                    "address": r.get('address'),
-                    "name": r.get('name'),
-                    "description": r.get('description'),
-                    "unit": r.get('unit'),
-                    "scale": r.get('scale', 1.0),
-                    "offset": r.get('offset', 0.0),
-                    "dataType": r.get('data_type', 'uint16'),
-                    "pollGroup": r.get('poll_group', 'A'), # Map category or group
-                    "category": r.get('category', 'general'),
-                    "min": r.get('min'),
-                    "max": r.get('max'),
-                    "nominal": r.get('nominal'),
-                    "currentValue": r.get('nominal') # For frontend slider
-                })
-
-            return {
-                "unit_id": unit_id,
-                "server": {
-                    "host": server.get('host', '0.0.0.0'),
-                    "port": server.get('port', 5020),
-                    "slave_id": server.get('slave_id', 1),
-                    "timeout_ms": 1000,
-                    "scan_rate_ms": params.get('update_interval_ms', 100)
-                },
-                "registers": api_regs,
-                "count": len(api_regs),
-                "source": "yaml"
-            }
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to read YAML config: {e}")
-            # Fallback to DB below
-
-    # Get Registers
+    # Get Registers (Prefer DB to ensure we get all metadata, but check YAML for sim correctness if needed - 
+    # actually let's stick to DB as primary for registers now that we have write-back working well)
     result_regs = await db.execute(
         select(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
     )
@@ -122,13 +70,42 @@ async def get_modbus_config(
     )
     server_conf = result_conf.scalar_one_or_none()
     
-    server_data = {
-        "host": server_conf.host if server_conf else "0.0.0.0",
-        "port": server_conf.port if server_conf else 502,
-        "slave_id": server_conf.slave_id if server_conf else 1,
-        "timeout_ms": server_conf.timeout_ms if server_conf else 1000,
-        "scan_rate_ms": server_conf.scan_rate_ms if server_conf else 1000
-    }
+    # Construct Server Data
+    if server_conf:
+        # Determine "effective" host/port for the UI to show as "Active"
+        if server_conf.use_simulation:
+            active_host = server_conf.sim_host
+            active_port = server_conf.sim_port
+        else:
+            active_host = server_conf.real_host or ""
+            active_port = server_conf.real_port or 502
+
+        server_data = {
+            "host": active_host, # Deprecated for config purposes, but kept for compat
+            "port": active_port, # Deprecated for config purposes
+            "slave_id": server_conf.slave_id,
+            "timeout_ms": server_conf.timeout_ms,
+            "scan_rate_ms": server_conf.scan_rate_ms,
+            "use_simulation": server_conf.use_simulation,
+            "real_host": server_conf.real_host,
+            "real_port": server_conf.real_port,
+            "sim_host": server_conf.sim_host,
+            "sim_port": server_conf.sim_port
+        }
+    else:
+        # Defaults
+        server_data = {
+            "host": "simulator",
+            "port": 5020,
+            "slave_id": 1,
+            "timeout_ms": 1000,
+            "scan_rate_ms": 1000,
+            "use_simulation": True,
+            "real_host": "",
+            "real_port": 502,
+            "sim_host": "simulator",
+            "sim_port": 5020
+        }
 
     return {
         "unit_id": unit_id,
@@ -161,8 +138,7 @@ async def update_modbus_config(
     current_user: dict = Depends(require_engineer)
 ) -> Dict:
     """
-    Update global Modbus configuration and optionally bulk update registers.
-    Frontend sends { server: {...}, registers: [...] }
+    Update global Modbus configuration.
     """
     
     # 1. Update Server Config
@@ -176,22 +152,32 @@ async def update_modbus_config(
             server_conf = ModbusServerConfig(unit_id=unit_id)
             db.add(server_conf)
         
-        server_conf.host = config.server.host
-        server_conf.port = config.server.port
+        # Update fields
         server_conf.slave_id = config.server.slave_id
         server_conf.timeout_ms = config.server.timeout_ms
         server_conf.scan_rate_ms = config.server.scan_rate_ms
-    
-    # 2. Update Registers if provided (Sync approach: delete all and recreate is safest for this UI)
+        
+        server_conf.use_simulation = config.server.use_simulation
+        if config.server.real_host is not None: server_conf.real_host = config.server.real_host
+        if config.server.real_port is not None: server_conf.real_port = config.server.real_port
+        if config.server.sim_host is not None: server_conf.sim_host = config.server.sim_host
+        if config.server.sim_port is not None: server_conf.sim_port = config.server.sim_port
+        
+        # Update the "host"/"port" legacy columns based on mode for backward compatibility
+        if server_conf.use_simulation:
+            server_conf.host = server_conf.sim_host
+            server_conf.port = server_conf.sim_port
+        else:
+            server_conf.host = server_conf.real_host if server_conf.real_host else "0.0.0.0"
+            server_conf.port = server_conf.real_port if server_conf.real_port else 502
+
+    # 2. Update Registers if provided
     if config.registers is not None:
-        # Delete existing
         await db.execute(
             delete(RegisterMapping).where(RegisterMapping.unit_id == unit_id)
         )
         
-        # Create new
         for r in config.registers:
-            # Ensure poll_group fits in VARCHAR(1)
             poll_group_val = str(r.get('pollGroup') if r.get('pollGroup') else r.get('category', 'A'))[:1]
             
             new_reg = RegisterMapping(
@@ -210,11 +196,12 @@ async def update_modbus_config(
             
     await db.commit()
     
-    # 3. WRITE TO YAML (Source of truth for Simulator)
+    # 3. WRITE TO YAML (For Simulator - only needs to know about itself)
+    # Simulator always listens on internal port, but its noise/values depend on this file.
+    # We should basically just write the registers and simulation params.
     try:
-        # Defaults
         full_config = {
-            "server": {},
+            "server": {}, # Simulator ignores host/port in this file mostly, it binds to 0.0.0.0 from main.py args
             "simulation": {
                 "update_interval_ms": 100,
                 "noise_enabled": True,
@@ -228,7 +215,7 @@ async def update_modbus_config(
             "registers": []
         }
 
-        # Read existing YAML to preserve data if partial update
+        # Merge existing
         config_path = "/app/shared_config/registers.yaml"
         if os.path.exists(config_path):
              try:
@@ -238,26 +225,21 @@ async def update_modbus_config(
                     if existing.get("engine_states"): full_config["engine_states"] = existing["engine_states"]
                     if existing.get("registers"): full_config["registers"] = existing["registers"]
                     if existing.get("server"): full_config["server"] = existing["server"]
-             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Failed to read existing YAML for merge: {e}")
+             except Exception:
+                pass
 
-        # Override Server
+        # Update Server info in YAML (Simulator uses this for Slave ID)
+        server_sec = full_config.get("server", {})
         if config.server:
-            full_config["server"] = {
-                "host": config.server.host,
-                "port": config.server.port,
-                "slave_id": config.server.slave_id
-            }
+            server_sec["slave_id"] = config.server.slave_id
+            # We don't change host/port here because Simulator always runs in its container
+        full_config["server"] = server_sec
 
-        # Override Registers ONLY if provided
+        # Update Registers
         if config.registers is not None:
             full_config["registers"] = []
             for r in config.registers:
-                # Map API fields back to YAML format
-                # Ensure poll_group fits 
                 poll_group_val = str(r.get('pollGroup') if r.get('pollGroup') else r.get('category', 'A'))[:1]
-
                 reg_dict = {
                     "address": r.get('address'),
                     "name": r.get('name'),
@@ -331,6 +313,5 @@ async def _reload_modbus_poller(unit_id: str):
         if poller and hasattr(poller, 'reload_config'):
             await poller.reload_config()
     except Exception as e:
-        # Log but don't fail the request
         import logging
         logging.getLogger(__name__).warning(f"Failed to reload Modbus poller: {e}")

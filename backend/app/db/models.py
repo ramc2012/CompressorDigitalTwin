@@ -264,6 +264,13 @@ class ModbusServerConfig(Base):
     slave_id: Mapped[int] = mapped_column(Integer, default=1)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=1000)
     scan_rate_ms: Mapped[int] = mapped_column(Integer, default=1000)
+
+    # Mode switching
+    use_simulation: Mapped[bool] = mapped_column(Boolean, default=True)
+    real_host: Mapped[Optional[str]] = mapped_column(String(50))
+    real_port: Mapped[Optional[int]] = mapped_column(Integer)
+    sim_host: Mapped[str] = mapped_column(String(50), default="simulator")
+    sim_port: Mapped[int] = mapped_column(Integer, default=5020)
     
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

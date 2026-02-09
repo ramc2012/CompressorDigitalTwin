@@ -13,8 +13,11 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 import yaml
 from pathlib import Path
+from sqlalchemy import select
 
 from app.config import get_settings
+from app.db.database import async_session_factory
+from app.db.models import ModbusServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +127,9 @@ class ModbusPoller:
         """Separate registers into Group A (critical) and Group B (secondary)."""
         critical_keywords = ["pressure", "temp", "rpm", "speed", "status", "alarm", "fault"]
         
+        self.group_a_registers = []
+        self.group_b_registers = []
+
         for reg in self.register_config:
             name_lower = reg.get('name', '').lower()
             group = reg.get('group', 'A').upper()
@@ -152,16 +158,51 @@ class ModbusPoller:
             logger.error(f"Error loading register config: {e}")
             return []
 
+    async def _update_connection_settings(self):
+        """Fetch active connection settings from DB (supports mode switching)."""
+        try:
+            async with async_session_factory() as db:
+                result = await db.execute(
+                    select(ModbusServerConfig).limit(1)
+                )
+                conf = result.scalar_one_or_none()
+                
+                if conf:
+                    new_host = conf.host # Defaults to DB's 'host' column which is updated by API based on mode
+                    new_port = conf.port
+                    new_slave = conf.slave_id
+                    
+                    # Log if changing
+                    if new_host != self.host or new_port != self.port:
+                        logger.info(f"Connection settings changed: {self.host}:{self.port} -> {new_host}:{new_port}")
+                        self.host = new_host
+                        self.port = new_port
+                        self.slave_id = new_slave
+                        
+                        # Trigger reconnect
+                        await self.disconnect()
+                        await self.connect()
+        except Exception as e:
+            logger.error(f"Failed to update connection settings from DB: {e}")
+
     async def reload_config(self):
-        """Reload configuration from file."""
+        """Reload configuration from file and DB."""
         logger.info("Reloading Modbus configuration...")
         self.register_config = self._load_register_config()
         self.name_to_register = {r['name']: r for r in self.register_config}
         self._categorize_registers()
+        
+        # Update connection settings (Simulation vs Real World)
+        await self._update_connection_settings()
+        
         logger.info(f"Reloaded {len(self.register_config)} registers")
     
     async def connect(self) -> bool:
         """Establish connection to Modbus device."""
+        # Ensure we have latest settings before connecting (on first connect)
+        if not self.client:
+             await self._update_connection_settings()
+
         try:
             self.client = AsyncModbusTcpClient(host=self.host, port=self.port, timeout=self.timeout)
             await self.client.connect()
@@ -259,7 +300,7 @@ class ModbusPoller:
                 count = 1
         blocks.append((start, count))
         return blocks
-
+    
     def _scale_values(self, raw_data: Dict[int, int]) -> Dict[str, float]:
         """Convert raw register values to scaled engineering units."""
         scaled = {}
@@ -315,6 +356,9 @@ async def init_modbus_poller():
     settings = get_settings()
     if settings.MODBUS_ENABLED:
         poller = get_modbus_poller()
+        # Connect is called inside start_polling loop via poll_all_registers implicitly or explicitly here
+        # But let's let it init settings first
+        await poller._update_connection_settings()
         await poller.connect()
         asyncio.create_task(poller.start_polling())
         return poller
